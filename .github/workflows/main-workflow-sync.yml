@@ -1,0 +1,111 @@
+name: Vendor Sync
+on:
+  repository_dispatch:
+    types:
+      - vendor-main-updated
+
+  workflow_dispatch:
+jobs:
+  sync-vendor:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+
+      - name: Checkout internal repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Generate GitHub App token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          owner: GitHubActionsPOC
+          repositories: gh-blue-yonder-testing-prod
+
+      - name: Generate Vendor GitHub App token
+        id: vendor_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.VENDOR_APP_ID }}
+          private-key: ${{ secrets.VENDOR_APP_PRIVATE_KEY }}
+          owner: guptadiya
+          repositories: sync-test-prod
+          
+      - name: Configure vendor remote
+        run: |
+          git remote remove vendor || true
+      
+          git remote add vendor https://github.com/guptadiya/sync-test-prod.git
+      
+          
+      
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "vendor-sync-bot"
+          git config --global user.email "vendor-sync-bot@users.noreply.github.com"
+
+
+
+      - name: Configure GitHub authentication
+        env:
+          TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          git config --global --unset-all http.https://github.com/.extraheader || true
+
+          git config --global http.https://github.com/GitHubActionsPOC/gh-blue-yonder-testing-prod.git.extraheader \
+          "AUTHORIZATION: basic $(echo -n x-access-token:${TOKEN} | base64)"
+
+      - name: Configure GitHub authentication
+        env:
+          TOKEN: ${{ steps.vendor_token.outputs.token }}
+        run: |
+          git config --global --unset-all http.https://github.com/.extraheader || true
+      
+          git config --global http.https://github.com/guptadiya/sync-test-prod.git.extraheader \
+          "AUTHORIZATION: basic $(echo -n x-access-token:${TOKEN} | base64)"
+
+
+      - name: Fetch vendor main
+        run: |
+          git fetch vendor main
+
+      - name: Create sync branch
+        run: |
+          BRANCH_NAME=vendor-sync-${{ github.run_id }}-${{ github.run_attempt }}
+      
+          git checkout main
+      
+          git checkout -b $BRANCH_NAME
+      
+          git merge vendor/main --allow-unrelated-histories -m "Merge vendor main into sync branch"
+      
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Configure origin remote
+        env:
+          TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          git remote set-url origin \
+          https://x-access-token:${TOKEN}@github.com/GitHubActionsPOC/gh-blue-yonder-testing-prod.git
+
+      - name: Push sync branch
+        run: |
+          git push origin $BRANCH_NAME --force
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          gh pr create \
+            --base main \
+            --head ${BRANCH_NAME} \
+            --title "Vendor main sync" \
+            --body "Automated sync from vendor repository."
+          git status
